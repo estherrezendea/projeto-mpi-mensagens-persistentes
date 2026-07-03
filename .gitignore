@@ -1,0 +1,27 @@
+# Build gerado pelo CMake
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Executável gerado
+simulador_mpi
+*.exe
+*.out
+
+# Filas persistentes geradas durante a execução
+data/fila_processo_*.txt
+
+# Arquivos temporários e logs
+*.log
+*.tmp
+*.bak
+
+# Configurações locais do VS Code
+.vscode/
+
+# Arquivos do sistema
+.DS_Store
+Thumbs.db
