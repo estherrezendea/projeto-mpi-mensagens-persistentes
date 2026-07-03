@@ -13,7 +13,7 @@ A simulação possui três processos:
 
 Cada processo possui uma fila persistente própria, armazenada em arquivo. As mensagens são enviadas entre os processos com MPI e só são removidas da fila do processo remetente após a confirmação de que foram persistidas no próximo processo.
 
-O projeto também simula atrasos aleatórios em cada processo. Mesmo quando um processo entra em espera, as mensagens não são perdidas, pois já estão armazenadas em uma fila persistente.
+O projeto também simula atrasos aleatórios em cada processo. Cada processo possui uma thread de aplicação, onde ocorrem os `sleep`, e uma thread de rede, dedicada ao MPI. Assim, mesmo quando a aplicação entra em espera, a rede continua livre para receber mensagens, persistir em disco e enviar ACKs.
 
 ---
 
@@ -121,24 +121,33 @@ Essa abordagem evita que uma mensagem seja removida da fila antes de existir con
 
 ---
 
-## 5. Comunicação Assíncrona
+## 5. Comunicação Assíncrona e Threads
+
+A aplicação inicializa o MPI com suporte a threads:
+
+```cpp
+MPI_Init_thread(..., MPI_THREAD_SERIALIZED, ...)
+```
+
+Depois disso, cada processo executa duas threads:
+
+```text
+Thread de aplicação -> simula indisponibilidade, processamento e sleep
+Thread de rede      -> executa MPI_Iprobe, MPI_Isend, MPI_Irecv e MPI_Test
+```
 
 A comunicação utiliza as primitivas não bloqueantes:
 
 ```cpp
 MPI_Isend(...)
 MPI_Irecv(...)
+MPI_Iprobe(...)
+MPI_Test(...)
 ```
 
-Após iniciar uma operação de envio ou recebimento, o programa utiliza:
+A thread de aplicação pode dormir por alguns segundos sem impedir que a thread de rede receba mensagens, grave em arquivo e envie confirmações.
 
-```cpp
-MPI_Wait(...)
-```
-
-para garantir que a operação necessária foi concluída antes de remover a mensagem da fila ou avançar para uma etapa dependente.
-
-A comunicação é iniciada de forma assíncrona, mas a confirmação é mantida para preservar a confiabilidade da entrega.
+O Servidor mantém a regra principal do trabalho: ele recebe a mensagem da Origem, grava em disco, envia ACK para a Origem, lê a mensagem da fila persistente e só então encaminha ao Destino.
 
 ---
 
@@ -242,14 +251,25 @@ projeto-mpi-mensagens-persistentes/
 │   ├── fila_processo_1.txt
 │   └── fila_processo_2.txt
 ├── include/
+│   ├── DestinationProcess.hpp
 │   ├── Logger.hpp
 │   ├── Message.hpp
 │   ├── MpiMessageTransport.hpp
-│   └── PersistentQueue.hpp
+│   ├── OriginProcess.hpp
+│   ├── PersistentQueue.hpp
+│   ├── ServerProcess.hpp
+│   ├── SimulationRoles.hpp
+│   ├── SimulationSupport.hpp
+│   └── SleepSimulator.hpp
 └── src/
+    ├── DestinationProcess.cpp
     ├── main.cpp
     ├── MpiMessageTransport.cpp
-    └── PersistentQueue.cpp
+    ├── OriginProcess.cpp
+    ├── PersistentQueue.cpp
+    ├── ServerProcess.cpp
+    ├── SimulationSupport.cpp
+    └── SleepSimulator.cpp
 ```
 
 ---
@@ -263,9 +283,9 @@ projeto-mpi-mensagens-persistentes/
 | Processo destino                     | Processo MPI de rank 2                                                        |
 | Fila persistente em cada processo    | Arquivos `fila_processo_0.txt`, `fila_processo_1.txt` e `fila_processo_2.txt` |
 | Mensagens persistentes               | Cada mensagem é gravada em arquivo antes de ser encaminhada ou processada     |
-| Sono aleatório                       | Cada processo dorme de forma aleatória durante a simulação                    |
-| Mensagens chegam ao destino          | Mensagens são mantidas na fila até confirmação por ACK                        |
-| Uso de MPI                           | Comunicação com `MPI_Isend`, `MPI_Irecv` e `MPI_Wait`                         |
+| Sono aleatório                       | A thread de aplicação de cada processo dorme de forma aleatória               |
+| Mensagens chegam ao destino          | A thread de rede continua ativa mesmo quando a aplicação está dormindo        |
+| Uso de MPI                           | Comunicação com `MPI_Isend`, `MPI_Irecv`, `MPI_Iprobe` e `MPI_Test`           |
 | Recuperação do arquivo pelo servidor | Servidor utiliza a fila persistente antes de encaminhar a mensagem            |
 | Demonstração de funcionamento        | Cinco mensagens de texto e uma mensagem de finalização                        |
 

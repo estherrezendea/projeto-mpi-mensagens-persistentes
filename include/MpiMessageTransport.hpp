@@ -5,6 +5,7 @@
 #include <mpi.h>
 
 #include <array>
+#include <optional>
 #include <string>
 
 class MpiMessageTransport {
@@ -46,4 +47,17 @@ public:
     [[nodiscard]] static Message wait(
         PendingReceive& pendingReceive
     );
+
+    [[nodiscard]] static bool test(PendingSend& pendingSend);
+
+    [[nodiscard]] static std::optional<Message> test(
+        PendingReceive& pendingReceive
+    );
+
+    [[nodiscard]] static bool hasMessage(int sourceRank);
+
+    [[nodiscard]] static Message receiveAvailable(int sourceRank);
+
+private:
+    [[nodiscard]] static Message packetToMessage(const WirePacket& packet);
 };

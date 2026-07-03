@@ -126,7 +126,10 @@ std::vector<Message> PersistentQueue::readAllUnlocked() const {
 void PersistentQueue::writeAllUnlocked(
     const std::vector<Message>& messages
 ) const {
-    std::ofstream file(filePath_, std::ios::trunc);
+    const std::filesystem::path temporaryPath =
+        filePath_.string() + ".tmp";
+
+    std::ofstream file(temporaryPath, std::ios::trunc);
 
     if (!file) {
         throw std::runtime_error(
@@ -146,4 +149,16 @@ void PersistentQueue::writeAllUnlocked(
     }
 
     file.flush();
+
+    if (!file) {
+        throw std::runtime_error(
+            "Não foi possível gravar a fila temporária: " +
+            temporaryPath.string()
+        );
+    }
+
+    file.close();
+
+    std::filesystem::remove(filePath_);
+    std::filesystem::rename(temporaryPath, filePath_);
 }

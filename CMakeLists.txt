@@ -11,8 +11,13 @@ find_package(Threads REQUIRED)
 
 add_executable(simulador_mpi
     src/main.cpp
+    src/DestinationProcess.cpp
     src/PersistentQueue.cpp
     src/MpiMessageTransport.cpp
+    src/OriginProcess.cpp
+    src/ServerProcess.cpp
+    src/SimulationSupport.cpp
+    src/SleepSimulator.cpp
 )
 
 target_include_directories(simulador_mpi PRIVATE include)

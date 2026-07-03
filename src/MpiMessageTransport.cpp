@@ -3,6 +3,7 @@
 #include <mpi.h>
 
 #include <algorithm>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -84,8 +85,62 @@ Message MpiMessageTransport::wait(
         MPI_STATUS_IGNORE
     );
 
-    const WirePacket& packet = pendingReceive.packet;
+    return packetToMessage(pendingReceive.packet);
+}
 
+bool MpiMessageTransport::test(PendingSend& pendingSend) {
+    int completed = 0;
+
+    MPI_Test(
+        &pendingSend.request,
+        &completed,
+        MPI_STATUS_IGNORE
+    );
+
+    return completed != 0;
+}
+
+std::optional<Message> MpiMessageTransport::test(
+    PendingReceive& pendingReceive
+) {
+    int completed = 0;
+
+    MPI_Test(
+        &pendingReceive.request,
+        &completed,
+        MPI_STATUS_IGNORE
+    );
+
+    if (completed == 0) {
+        return std::nullopt;
+    }
+
+    return packetToMessage(pendingReceive.packet);
+}
+
+bool MpiMessageTransport::hasMessage(const int sourceRank) {
+    int hasPendingMessage = 0;
+
+    MPI_Iprobe(
+        sourceRank,
+        MESSAGE_TAG,
+        MPI_COMM_WORLD,
+        &hasPendingMessage,
+        MPI_STATUS_IGNORE
+    );
+
+    return hasPendingMessage != 0;
+}
+
+Message MpiMessageTransport::receiveAvailable(const int sourceRank) {
+    PendingReceive pendingReceive;
+
+    startReceive(pendingReceive, sourceRank);
+
+    return wait(pendingReceive);
+}
+
+Message MpiMessageTransport::packetToMessage(const WirePacket& packet) {
     if (
         packet.contentSize < 0 ||
         packet.contentSize > MAX_CONTENT_SIZE
@@ -95,14 +150,15 @@ Message MpiMessageTransport::wait(
         );
     }
 
-    return Message{
-        .id = packet.id,
-        .senderRank = packet.senderRank,
-        .receiverRank = packet.receiverRank,
-        .type = static_cast<MessageType>(packet.type),
-        .content = std::string(
-            packet.content.data(),
-            static_cast<std::size_t>(packet.contentSize)
-        )
-    };
+    Message message;
+    message.id = packet.id;
+    message.senderRank = packet.senderRank;
+    message.receiverRank = packet.receiverRank;
+    message.type = static_cast<MessageType>(packet.type);
+    message.content = std::string(
+        packet.content.data(),
+        static_cast<std::size_t>(packet.contentSize)
+    );
+
+    return message;
 }
