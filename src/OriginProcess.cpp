@@ -2,11 +2,13 @@
 
 #include "Logger.hpp"
 #include "MpiMessageTransport.hpp"
+#include "SimulationConsole.hpp"
 #include "SimulationRoles.hpp"
+#include "SimulationState.hpp"
 #include "SimulationSupport.hpp"
-#include "SleepSimulator.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <exception>
 #include <functional>
 #include <optional>
@@ -14,6 +16,87 @@
 #include <thread>
 
 namespace {
+    void sleepApplication(
+        const int rank,
+        const int seconds,
+        const std::atomic_bool& networkFinished
+    ) {
+        for (int remaining = seconds;
+             remaining > 0 && !networkFinished.load();
+             --remaining) {
+            SimulationState::markSleeping(rank, remaining);
+            Logger::info(rank, "ORIGEM", "Aplicacao dormindo.");
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+
+        SimulationState::markAwake(rank);
+        Logger::info(rank, "ORIGEM", "Aplicacao acordou.");
+    }
+
+    void createUserMessage(
+        const int rank,
+        PersistentQueue& queue,
+        std::atomic_bool& messagesReady,
+        const SimulationCommand& command
+    ) {
+        using namespace SimulationRoles;
+
+        const Message message = createMessage(
+            command.messageId,
+            ORIGEM,
+            SERVIDOR,
+            MessageType::Normal,
+            command.content
+        );
+
+        SimulationState::appendHistory(
+            message.id,
+            "Origem",
+            "CREATED",
+            message.content
+        );
+        Logger::info(rank, "ORIGEM", "Mensagem criada.");
+
+        queue.enqueue(message);
+
+        SimulationState::appendHistory(
+            message.id,
+            "Origem",
+            "PERSISTED"
+        );
+        Logger::info(rank, "ORIGEM", "Mensagem persistida.");
+
+        messagesReady.store(true);
+    }
+
+    void createFinishMessage(
+        const int rank,
+        PersistentQueue& queue,
+        std::atomic_bool& messagesReady
+    ) {
+        using namespace SimulationRoles;
+
+        const Message finishMessage = createMessage(
+            999999,
+            ORIGEM,
+            SERVIDOR,
+            MessageType::Finish,
+            "FIM_DA_SIMULACAO"
+        );
+
+        queue.enqueue(finishMessage);
+        messagesReady.store(true);
+
+        SimulationState::appendHistory(
+            finishMessage.id,
+            "Origem",
+            "FINISH",
+            finishMessage.content
+        );
+
+        Logger::info(rank, "ORIGEM", "Finalizacao solicitada.");
+    }
+
     void runOriginApplication(
         const int rank,
         PersistentQueue& queue,
@@ -22,42 +105,48 @@ namespace {
         std::exception_ptr& exception,
         std::mt19937 randomGenerator
     ) {
+        (void)randomGenerator;
+
         try {
-            Logger::info(
-                rank,
-                "ORIGEM-APP",
-                "Criando e persistindo mensagens na fila local."
-            );
+            SimulationState::markAwake(rank);
 
-            for (const Message& message : createDemoMessages()) {
-                queue.enqueue(message);
+            while (!networkFinished.load()) {
+                const auto commands = SimulationState::consumeCommands(rank);
 
-                if (isFinishMessage(message)) {
-                    Logger::info(
-                        rank,
-                        "ORIGEM-APP",
-                        "Mensagem de finalizacao persistida na fila."
-                    );
-                } else {
-                    Logger::info(
-                        rank,
-                        "ORIGEM-APP",
-                        "Mensagem #" + std::to_string(message.id) +
-                        " persistida: \"" + message.content + "\""
+                for (const SimulationCommand& command : commands) {
+                    if (command.type == SimulationCommandType::Sleep) {
+                        sleepApplication(
+                            rank,
+                            command.seconds,
+                            networkFinished
+                        );
+                    } else if (
+                        command.type == SimulationCommandType::SendMessage
+                    ) {
+                        createUserMessage(
+                            rank,
+                            queue,
+                            messagesReady,
+                            command
+                        );
+                    } else if (command.type == SimulationCommandType::Stop) {
+                        createFinishMessage(
+                            rank,
+                            queue,
+                            messagesReady
+                        );
+                    }
+                }
+
+                if (commands.empty()) {
+                    SimulationState::markAwake(rank);
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(100)
                     );
                 }
             }
 
-            messagesReady.store(true);
-
-            while (!networkFinished.load()) {
-                sleepRandomly(
-                    rank,
-                    "ORIGEM-APP",
-                    "A aplicacao esta indisponivel; a thread MPI continua enviando.",
-                    randomGenerator
-                );
-            }
+            SimulationState::markStopped(rank);
         } catch (...) {
             exception = std::current_exception();
             networkFinished.store(true);
@@ -106,13 +195,19 @@ namespace {
                         );
                         sendActive = true;
 
-                        Logger::info(
-                            rank,
-                            "ORIGEM-REDE",
-                            "Envio assincrono da mensagem #" +
-                            std::to_string(inFlightMessage->id) +
-                            " para o Servidor iniciado."
-                        );
+                        if (!isFinishMessage(inFlightMessage.value())) {
+                            SimulationState::appendHistory(
+                                inFlightMessage->id,
+                                "Origem",
+                                "SENT_TO_SERVER"
+                            );
+
+                            Logger::info(
+                                rank,
+                                "ORIGEM",
+                                "Mensagem enviada ao servidor."
+                            );
+                        }
                     }
                 }
 
@@ -140,18 +235,22 @@ namespace {
                         if (isFinishMessage(removedMessage)) {
                             Logger::info(
                                 rank,
-                                "ORIGEM-REDE",
-                                "ACK da finalizacao recebido. Origem encerrou os envios."
+                                "ORIGEM",
+                                "ACK da finalizacao recebido."
                             );
 
                             networkFinished.store(true);
                         } else {
+                            SimulationState::appendHistory(
+                                removedMessage.id,
+                                "Origem",
+                                "ACK_FROM_SERVER"
+                            );
+
                             Logger::info(
                                 rank,
-                                "ORIGEM-REDE",
-                                "ACK recebido para a mensagem #" +
-                                std::to_string(removedMessage.id) +
-                                ". Mensagem removida da fila local."
+                                "ORIGEM",
+                                "ACK recebido. Mensagem removida da fila."
                             );
                         }
 
@@ -175,8 +274,22 @@ void runOrigin(
 ) {
     std::atomic_bool messagesReady{false};
     std::atomic_bool networkFinished{false};
+    std::atomic_bool consoleFinished{false};
     std::exception_ptr applicationException;
     std::exception_ptr networkException;
+    std::exception_ptr consoleException;
+
+    std::thread consoleThread(
+        [&consoleFinished, &consoleException]() {
+            try {
+                SimulationConsole console(consoleFinished);
+                console.run();
+            } catch (...) {
+                consoleException = std::current_exception();
+                consoleFinished.store(true);
+            }
+        }
+    );
 
     std::thread applicationThread(
         runOriginApplication,
@@ -197,9 +310,11 @@ void runOrigin(
         std::ref(networkException)
     );
 
+    consoleThread.join();
     applicationThread.join();
     networkThread.join();
 
+    checkThreadException(consoleException);
     checkThreadException(applicationException);
     checkThreadException(networkException);
 }

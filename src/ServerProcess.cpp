@@ -3,10 +3,11 @@
 #include "Logger.hpp"
 #include "MpiMessageTransport.hpp"
 #include "SimulationRoles.hpp"
+#include "SimulationState.hpp"
 #include "SimulationSupport.hpp"
-#include "SleepSimulator.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <exception>
 #include <functional>
 #include <list>
@@ -21,15 +22,46 @@ namespace {
         std::exception_ptr& exception,
         std::mt19937 randomGenerator
     ) {
+        (void)randomGenerator;
+
         try {
+            SimulationState::markAwake(rank);
+
             while (!networkFinished.load()) {
-                sleepRandomly(
-                    rank,
-                    "SERVIDOR-APP",
-                    "A aplicacao do servidor esta indisponivel; a rede continua recebendo e persistindo.",
-                    randomGenerator
-                );
+                const auto commands = SimulationState::consumeCommands(rank);
+
+                for (const SimulationCommand& command : commands) {
+                    if (command.type != SimulationCommandType::Sleep) {
+                        continue;
+                    }
+
+                    for (int remaining = command.seconds;
+                         remaining > 0 && !networkFinished.load();
+                         --remaining) {
+                        SimulationState::markSleeping(rank, remaining);
+                        Logger::info(
+                            rank,
+                            "SERVIDOR",
+                            "Aplicacao dormindo."
+                        );
+                        std::this_thread::sleep_for(
+                            std::chrono::seconds(1)
+                        );
+                    }
+
+                    SimulationState::markAwake(rank);
+                    Logger::info(rank, "SERVIDOR", "Aplicacao acordou.");
+                }
+
+                if (commands.empty()) {
+                    SimulationState::markAwake(rank);
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(100)
+                    );
+                }
             }
+
+            SimulationState::markStopped(rank);
         } catch (...) {
             exception = std::current_exception();
         }
@@ -69,16 +101,30 @@ namespace {
                     if (isFinishMessage(receivedMessage)) {
                         Logger::info(
                             rank,
-                            "SERVIDOR-REDE",
+                            "SERVIDOR",
                             "Mensagem de finalizacao recebida e persistida."
                         );
                     } else {
+                        SimulationState::appendHistory(
+                            receivedMessage.id,
+                            "Servidor",
+                            "RECEIVED"
+                        );
+                        SimulationState::appendHistory(
+                            receivedMessage.id,
+                            "Servidor",
+                            "SERVER_PERSISTED"
+                        );
+
                         Logger::info(
                             rank,
-                            "SERVIDOR-REDE",
-                            "Mensagem #" + std::to_string(receivedMessage.id) +
-                            " recebida e persistida: \"" +
-                            receivedMessage.content + "\""
+                            "SERVIDOR",
+                            "Mensagem recebida."
+                        );
+                        Logger::info(
+                            rank,
+                            "SERVIDOR",
+                            "Mensagem gravada na fila persistente."
                         );
                     }
 
@@ -109,16 +155,20 @@ namespace {
                         if (isFinishMessage(forwardingMessage.value())) {
                             Logger::info(
                                 rank,
-                                "SERVIDOR-REDE",
+                                "SERVIDOR",
                                 "Mensagem de finalizacao lida da fila persistente antes do encaminhamento."
                             );
                         } else {
+                            SimulationState::appendHistory(
+                                forwardingMessage->id,
+                                "Servidor",
+                                "READ_FROM_QUEUE"
+                            );
+
                             Logger::info(
                                 rank,
-                                "SERVIDOR-REDE",
-                                "Mensagem #" +
-                                std::to_string(forwardingMessage->id) +
-                                " lida da fila persistente antes do encaminhamento."
+                                "SERVIDOR",
+                                "Mensagem recuperada da fila persistente."
                             );
                         }
 
@@ -138,13 +188,19 @@ namespace {
                         );
                         forwardSendActive = true;
 
-                        Logger::info(
-                            rank,
-                            "SERVIDOR-REDE",
-                            "Encaminhamento assincrono da mensagem #" +
-                            std::to_string(forwardingMessage->id) +
-                            " para o Destino iniciado."
-                        );
+                        if (!isFinishMessage(forwardingMessage.value())) {
+                            SimulationState::appendHistory(
+                                forwardingMessage->id,
+                                "Servidor",
+                                "FORWARDED"
+                            );
+
+                            Logger::info(
+                                rank,
+                                "SERVIDOR",
+                                "Mensagem encaminhada ao destino."
+                            );
+                        }
                     }
                 }
 
@@ -176,18 +232,22 @@ namespace {
                         if (isFinishMessage(removedMessage)) {
                             Logger::info(
                                 rank,
-                                "SERVIDOR-REDE",
+                                "SERVIDOR",
                                 "ACK da finalizacao recebido. Servidor encerrou."
                             );
 
                             networkFinished.store(true);
                         } else {
+                            SimulationState::appendHistory(
+                                removedMessage.id,
+                                "Servidor",
+                                "ACK_FROM_DESTINATION"
+                            );
+
                             Logger::info(
                                 rank,
-                                "SERVIDOR-REDE",
-                                "ACK do Destino recebido para a mensagem #" +
-                                std::to_string(removedMessage.id) +
-                                ". Mensagem removida da fila."
+                                "SERVIDOR",
+                                "ACK recebido do destino. Mensagem removida da fila."
                             );
                         }
 

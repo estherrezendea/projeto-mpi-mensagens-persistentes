@@ -20,6 +20,8 @@ public:
 
     [[nodiscard]] bool empty() const;
 
+    [[nodiscard]] std::vector<Message> messages() const;
+
     void clear();
 
     [[nodiscard]] const std::filesystem::path& path() const;

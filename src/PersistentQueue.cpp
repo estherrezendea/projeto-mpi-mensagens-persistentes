@@ -83,6 +83,12 @@ bool PersistentQueue::empty() const {
     return readAllUnlocked().empty();
 }
 
+std::vector<Message> PersistentQueue::messages() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    return readAllUnlocked();
+}
+
 void PersistentQueue::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
 

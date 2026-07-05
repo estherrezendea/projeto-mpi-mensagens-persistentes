@@ -58,10 +58,10 @@ data/
 
 A Origem:
 
-1. Cria mensagens de demonstração.
-2. Persiste todas as mensagens na própria fila.
-3. Dorme por um intervalo aleatório antes de enviar cada mensagem.
-4. Recupera a primeira mensagem da fila.
+1. Recebe comandos do menu interativo.
+2. Cria uma nova mensagem quando o usuário escolhe enviar.
+3. Persiste a mensagem na própria fila.
+4. A thread de rede recupera a primeira mensagem da fila.
 5. Inicia o envio assíncrono para o Servidor.
 6. Aguarda o ACK do Servidor.
 7. Remove a mensagem da própria fila somente após receber o ACK.
@@ -73,7 +73,7 @@ O Servidor:
 1. Recebe a mensagem enviada pela Origem.
 2. Persiste a mensagem em sua própria fila.
 3. Envia um ACK para a Origem.
-4. Dorme por um intervalo aleatório.
+4. Pode dormir por comando do usuário, sem bloquear a thread de rede.
 5. Recupera a mensagem diretamente da fila persistente em arquivo.
 6. Encaminha a mensagem recuperada para o Destino.
 7. Aguarda o ACK do Destino.
@@ -88,10 +88,11 @@ O Destino:
 1. Recebe a mensagem enviada pelo Servidor.
 2. Persiste a mensagem na própria fila.
 3. Envia um ACK para o Servidor.
-4. Dorme por um intervalo aleatório.
-5. Recupera a mensagem da fila persistente.
-6. Processa a mensagem.
-7. Remove a mensagem da fila.
+4. Pode dormir por comando do usuário.
+5. Enquanto a aplicação dorme, a thread de rede continua recebendo e persistindo mensagens.
+6. Ao acordar, recupera as mensagens da fila persistente.
+7. Processa a mensagem.
+8. Remove a mensagem da fila.
 
 ---
 
@@ -151,19 +152,28 @@ O Servidor mantém a regra principal do trabalho: ele recebe a mensagem da Orige
 
 ---
 
-## 6. Mensagens Demonstrativas
+## 6. Menu Interativo
 
-A Origem cria cinco mensagens de demonstração:
+Ao executar a simulação, o processo de rank 0 exibe um menu:
 
 ```text
-1. Solicitação de processamento de imagem LT-102
-2. Atualização cadastral do ativo AT-045
-3. Relatório de inspeção da torre T-883
-4. Alerta de vegetação próxima à rede
-5. Solicitação de reprocessamento de análise
+=========================================
+SIMULADOR DE MENSAGENS PERSISTENTES MPI
+=========================================
+
+1 - Enviar nova mensagem
+2 - Colocar Origem para dormir
+3 - Colocar Servidor para dormir
+4 - Colocar Destino para dormir
+5 - Mostrar estado das filas
+6 - Mostrar historico de mensagens
+7 - Encerrar simulacao
+8 - Passo a passo da mensagem
 ```
 
-Também é enviada uma mensagem especial de finalização:
+O usuário pode enviar mensagens manualmente, colocar a aplicação de cada processo para dormir, consultar o estado das filas persistentes, visualizar o histórico geral e abrir o passo a passo de uma mensagem específica.
+
+Ao escolher a opção de encerramento, a Origem envia uma mensagem especial de finalização:
 
 ```text
 FIM_DA_SIMULACAO
@@ -226,14 +236,19 @@ Processo 2 -> Destino
 Durante a execução, devem aparecer mensagens semelhantes a estas:
 
 ```text
-[Processo 0] [ORIGEM] Mensagem #1 persistida na fila local.
-[Processo 0] [ORIGEM] Entrando em espera aleatória por 2 segundo(s).
+[Processo 0] [ORIGEM] Mensagem criada.
+[Processo 0] [ORIGEM] Mensagem persistida.
+[Processo 0] [ORIGEM] Mensagem enviada ao servidor.
 
-[Processo 1] [SERVIDOR] Mensagem #1 recebida e persistida.
-[Processo 1] [SERVIDOR] Mensagem #1 recuperada da fila persistente antes do encaminhamento.
+[Processo 1] [SERVIDOR] Mensagem recebida.
+[Processo 1] [SERVIDOR] Mensagem gravada na fila persistente.
+[Processo 1] [SERVIDOR] Mensagem recuperada da fila persistente.
+[Processo 1] [SERVIDOR] Mensagem encaminhada ao destino.
 
-[Processo 2] [DESTINO] Mensagem #1 recebida e persistida.
-[Processo 2] [DESTINO] Mensagem #1 processada com sucesso.
+[Processo 2] [DESTINO] Mensagem recebida.
+[Processo 2] [DESTINO] Mensagem persistida.
+[Processo 2] [DESTINO] Mensagem aguardando processamento.
+[Processo 2] [DESTINO] Mensagem concluida.
 ```
 
 A ordem global dos logs pode mudar a cada execução, pois os três processos executam concorrentemente.
@@ -258,7 +273,9 @@ projeto-mpi-mensagens-persistentes/
 │   ├── OriginProcess.hpp
 │   ├── PersistentQueue.hpp
 │   ├── ServerProcess.hpp
+│   ├── SimulationConsole.hpp
 │   ├── SimulationRoles.hpp
+│   ├── SimulationState.hpp
 │   ├── SimulationSupport.hpp
 │   └── SleepSimulator.hpp
 └── src/
@@ -268,6 +285,8 @@ projeto-mpi-mensagens-persistentes/
     ├── OriginProcess.cpp
     ├── PersistentQueue.cpp
     ├── ServerProcess.cpp
+    ├── SimulationConsole.cpp
+    ├── SimulationState.cpp
     ├── SimulationSupport.cpp
     └── SleepSimulator.cpp
 ```
@@ -283,10 +302,10 @@ projeto-mpi-mensagens-persistentes/
 | Processo destino                     | Processo MPI de rank 2                                                        |
 | Fila persistente em cada processo    | Arquivos `fila_processo_0.txt`, `fila_processo_1.txt` e `fila_processo_2.txt` |
 | Mensagens persistentes               | Cada mensagem é gravada em arquivo antes de ser encaminhada ou processada     |
-| Sono aleatório                       | A thread de aplicação de cada processo dorme de forma aleatória               |
+| Sono da aplicação                    | A thread de aplicação de cada processo dorme por comando do usuário           |
 | Mensagens chegam ao destino          | A thread de rede continua ativa mesmo quando a aplicação está dormindo        |
 | Uso de MPI                           | Comunicação com `MPI_Isend`, `MPI_Irecv`, `MPI_Iprobe` e `MPI_Test`           |
 | Recuperação do arquivo pelo servidor | Servidor utiliza a fila persistente antes de encaminhar a mensagem            |
-| Demonstração de funcionamento        | Cinco mensagens de texto e uma mensagem de finalização                        |
+| Demonstração de funcionamento        | Menu interativo com estado das filas e histórico das mensagens                |
 
 ```

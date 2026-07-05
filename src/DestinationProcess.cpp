@@ -3,10 +3,11 @@
 #include "Logger.hpp"
 #include "MpiMessageTransport.hpp"
 #include "SimulationRoles.hpp"
+#include "SimulationState.hpp"
 #include "SimulationSupport.hpp"
-#include "SleepSimulator.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <exception>
 #include <functional>
 #include <list>
@@ -22,22 +23,65 @@ namespace {
         std::exception_ptr& exception,
         std::mt19937 randomGenerator
     ) {
+        (void)randomGenerator;
+
         try {
+            SimulationState::markAwake(rank);
+
             while (!applicationFinished.load()) {
-                sleepRandomly(
-                    rank,
-                    "DESTINO-APP",
-                    "A aplicacao pode dormir; a thread MPI continua recebendo e enviando ACKs.",
-                    randomGenerator
-                );
+                const auto commands = SimulationState::consumeCommands(rank);
+
+                for (const SimulationCommand& command : commands) {
+                    if (command.type != SimulationCommandType::Sleep) {
+                        continue;
+                    }
+
+                    for (int remaining = command.seconds;
+                         remaining > 0 && !applicationFinished.load();
+                         --remaining) {
+                        SimulationState::markSleeping(rank, remaining);
+                        Logger::info(
+                            rank,
+                            "DESTINO",
+                            "Aplicacao dormindo."
+                        );
+                        std::this_thread::sleep_for(
+                            std::chrono::seconds(1)
+                        );
+                    }
+
+                    const auto pendingAfterSleep = queue.messages();
+
+                    for (const Message& message : pendingAfterSleep) {
+                        if (!isFinishMessage(message)) {
+                            SimulationState::appendHistory(
+                                message.id,
+                                "Destino",
+                                "APP_SLEEPING"
+                            );
+                            SimulationState::appendHistory(
+                                message.id,
+                                "Destino",
+                                "APP_AWAKE"
+                            );
+                        }
+                    }
+
+                    SimulationState::markAwake(rank);
+                    Logger::info(rank, "DESTINO", "Aplicacao acordou.");
+                }
 
                 const auto pendingMessage = queue.peek();
 
                 if (!pendingMessage.has_value()) {
                     if (finishReceivedByNetwork.load()) {
                         applicationFinished.store(true);
+                        SimulationState::markStopped(rank);
                     }
 
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(100)
+                    );
                     continue;
                 }
 
@@ -47,19 +91,28 @@ namespace {
                 if (isFinishMessage(removedMessage)) {
                     Logger::info(
                         rank,
-                        "DESTINO-APP",
+                        "DESTINO",
                         "Finalizacao processada. Destino encerrou a aplicacao."
                     );
 
                     applicationFinished.store(true);
+                    SimulationState::markStopped(rank);
                 } else {
+                    SimulationState::appendHistory(
+                        removedMessage.id,
+                        "Destino",
+                        "PROCESSED"
+                    );
+                    SimulationState::appendProcessedMessage(
+                        rank,
+                        removedMessage
+                    );
+
+                    Logger::info(rank, "DESTINO", "Processando mensagem.");
                     Logger::info(
                         rank,
-                        "DESTINO-APP",
-                        "Mensagem #" +
-                        std::to_string(removedMessage.id) +
-                        " processada com sucesso: \"" +
-                        removedMessage.content + "\""
+                        "DESTINO",
+                        "Mensagem concluida."
                     );
                 }
             }
@@ -98,16 +151,40 @@ namespace {
                     if (isFinishMessage(receivedMessage)) {
                         Logger::info(
                             rank,
-                            "DESTINO-REDE",
+                            "DESTINO",
                             "Mensagem de finalizacao recebida e persistida."
                         );
                     } else {
+                        SimulationState::appendHistory(
+                            receivedMessage.id,
+                            "Destino",
+                            "RECEIVED"
+                        );
+                        SimulationState::appendHistory(
+                            receivedMessage.id,
+                            "Destino",
+                            "DESTINATION_PERSISTED"
+                        );
+                        SimulationState::appendHistory(
+                            receivedMessage.id,
+                            "Destino",
+                            "WAITING_PROCESSING"
+                        );
+
                         Logger::info(
                             rank,
-                            "DESTINO-REDE",
-                            "Mensagem #" + std::to_string(receivedMessage.id) +
-                            " recebida e persistida: \"" +
-                            receivedMessage.content + "\""
+                            "DESTINO",
+                            "Mensagem recebida."
+                        );
+                        Logger::info(
+                            rank,
+                            "DESTINO",
+                            "Mensagem persistida."
+                        );
+                        Logger::info(
+                            rank,
+                            "DESTINO",
+                            "Mensagem aguardando processamento."
                         );
                     }
 

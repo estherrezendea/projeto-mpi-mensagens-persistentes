@@ -16,6 +16,8 @@ add_executable(simulador_mpi
     src/MpiMessageTransport.cpp
     src/OriginProcess.cpp
     src/ServerProcess.cpp
+    src/SimulationConsole.cpp
+    src/SimulationState.cpp
     src/SimulationSupport.cpp
     src/SleepSimulator.cpp
 )

@@ -6,6 +6,7 @@
 #include "PersistentQueue.hpp"
 #include "ServerProcess.hpp"
 #include "SimulationRoles.hpp"
+#include "SimulationState.hpp"
 
 #include <chrono>
 #include <exception>
@@ -113,10 +114,17 @@ int main(int argc, char* argv[]) {
     }
 
     try {
+        if (rank == SimulationRoles::ORIGEM) {
+            SimulationState::prepareGlobalState();
+        }
+
+        MPI_Barrier(MPI_COMM_WORLD);
+
         const std::filesystem::path queuePath =
             "data/fila_processo_" + std::to_string(rank) + ".txt";
 
         PersistentQueue queue(queuePath);
+        SimulationState::prepareNodeState(rank);
 
         if (shouldResetQueues(argc, argv)) {
             queue.clear();
