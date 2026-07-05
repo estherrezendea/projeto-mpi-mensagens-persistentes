@@ -147,21 +147,21 @@ namespace {
 
     std::string eventLabel(const std::string& event) {
         static const std::map<std::string, std::string> labels{
-            {"CREATED", "Criada"},
-            {"PERSISTED", "Persistida"},
-            {"SENT_TO_SERVER", "Enviada ao Servidor"},
-            {"ACK_FROM_SERVER", "ACK recebido do Servidor"},
-            {"RECEIVED", "Recebida"},
-            {"SERVER_PERSISTED", "Persistida"},
-            {"READ_FROM_QUEUE", "Recuperada da fila persistente"},
-            {"FORWARDED", "Encaminhada ao Destino"},
-            {"ACK_FROM_DESTINATION", "ACK recebido do Destino"},
-            {"DESTINATION_PERSISTED", "Persistida"},
-            {"WAITING_PROCESSING", "Aguardando processamento"},
-            {"APP_SLEEPING", "Aplicacao dormindo"},
-            {"APP_AWAKE", "Aplicacao acordou"},
-            {"PROCESSED", "Processada"},
-            {"FINISH", "Finalizacao"}
+            {"GERADA_PELA_ORIGEM", "Mensagem instanciada"},
+            {"GRAVADA_FILA_ORIGEM", "Gravada em disco (Fila Origem)"},
+            {"ENVIADA_AO_SERVIDOR_MPI", "Enviada via rede MPI (Origem -> Servidor)"},
+            {"CONFIRMACAO_RECEBIDA_SERVIDOR", "Confirmacao de recebimento (ACK) do Servidor"},
+            {"RECEBIDA_PELA_REDE", "Mensagem recebida via rede MPI"},
+            {"GRAVADA_FILA_SERVIDOR", "Gravada em disco (Fila Servidor)"},
+            {"LIDA_FILA_PERSISTENTE", "Recuperada da fila persistente"},
+            {"ENCAMINHADA_AO_DESTINO_MPI", "Encaminhada via rede MPI (Servidor -> Destino)"},
+            {"CONFIRMACAO_RECEBIDA_DESTINO", "Confirmacao de recebimento (ACK) do Destino"},
+            {"GRAVADA_FILA_DESTINO", "Gravada em disco (Fila Destino)"},
+            {"AGUARDANDO_PROCESSAMENTO_APLICACAO", "Em fila de processamento (idle)"},
+            {"APLICACAO_SUSPENSA", "Processo suspenso (idle mode)"},
+            {"APLICACAO_RETOMADA", "Processo retomado"},
+            {"MENSAGEM_PROCESSADA_COM_SUCESSO", "Processamento finalizado com sucesso"},
+            {"SINAL_FINALIZACAO_GERADO", "Sinal de termino da simulacao (Tombstone)"}
         };
 
         const auto iterator = labels.find(event);
@@ -183,13 +183,13 @@ namespace {
 
     bool isCheckedEvent(const std::string& event) {
         return
-            event != "APP_SLEEPING" &&
-            event != "APP_AWAKE";
+            event != "APLICACAO_SUSPENSA" &&
+            event != "APLICACAO_RETOMADA";
     }
 
     std::string timelineLabel(const HistoryEvent& event) {
-        if (event.event == "APP_AWAKE") {
-            return event.node + " acordou";
+        if (event.event == "APLICACAO_RETOMADA") {
+            return event.node + " retomou execucao";
         }
 
         if (isCheckedEvent(event.event)) {

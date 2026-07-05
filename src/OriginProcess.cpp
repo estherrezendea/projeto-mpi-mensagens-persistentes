@@ -19,24 +19,24 @@ namespace {
     void sleepApplication(
         const int rank,
         const int seconds,
-        const std::atomic_bool& networkFinished
+        const std::atomic_bool& isNetworkShutdownRequested
     ) {
         for (int remaining = seconds;
-             remaining > 0 && !networkFinished.load();
+             remaining > 0 && !isNetworkShutdownRequested.load();
              --remaining) {
             SimulationState::markSleeping(rank, remaining);
-            Logger::info(rank, "ORIGEM", "Aplicacao dormindo.");
+            Logger::info(rank, "ORIGEM", "Processo de aplicacao suspenso (idle mode).");
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
 
         SimulationState::markAwake(rank);
-        Logger::info(rank, "ORIGEM", "Aplicacao acordou.");
+        Logger::info(rank, "ORIGEM", "Processo de aplicacao retomado.");
     }
 
     void createUserMessage(
         const int rank,
         PersistentQueue& queue,
-        std::atomic_bool& messagesReady,
+        std::atomic_bool& isMessageQueueReady,
         const SimulationCommand& command
     ) {
         using namespace SimulationRoles;
@@ -52,27 +52,27 @@ namespace {
         SimulationState::appendHistory(
             message.id,
             "Origem",
-            "CREATED",
+            "GERADA_PELA_ORIGEM",
             message.content
         );
-        Logger::info(rank, "ORIGEM", "Mensagem criada.");
+        Logger::info(rank, "ORIGEM", "Nova mensagem instanciada na Origem.");
 
         queue.enqueue(message);
 
         SimulationState::appendHistory(
             message.id,
             "Origem",
-            "PERSISTED"
+            "GRAVADA_FILA_ORIGEM"
         );
-        Logger::info(rank, "ORIGEM", "Mensagem persistida.");
+        Logger::info(rank, "ORIGEM", "Mensagem serializada e gravada com seguranca em disco.");
 
-        messagesReady.store(true);
+        isMessageQueueReady.store(true);
     }
 
     void createFinishMessage(
         const int rank,
         PersistentQueue& queue,
-        std::atomic_bool& messagesReady
+        std::atomic_bool& isMessageQueueReady
     ) {
         using namespace SimulationRoles;
 
@@ -85,23 +85,23 @@ namespace {
         );
 
         queue.enqueue(finishMessage);
-        messagesReady.store(true);
+        isMessageQueueReady.store(true);
 
         SimulationState::appendHistory(
             finishMessage.id,
             "Origem",
-            "FINISH",
+            "SINAL_FINALIZACAO_GERADO",
             finishMessage.content
         );
 
-        Logger::info(rank, "ORIGEM", "Finalizacao solicitada.");
+        Logger::info(rank, "ORIGEM", "Sinal de finalizacao (Tombstone) instanciado.");
     }
 
     void runOriginApplication(
         const int rank,
         PersistentQueue& queue,
-        std::atomic_bool& messagesReady,
-        std::atomic_bool& networkFinished,
+        std::atomic_bool& isMessageQueueReady,
+        std::atomic_bool& isNetworkShutdownRequested,
         std::exception_ptr& exception,
         std::mt19937 randomGenerator
     ) {
@@ -110,7 +110,7 @@ namespace {
         try {
             SimulationState::markAwake(rank);
 
-            while (!networkFinished.load()) {
+            while (!isNetworkShutdownRequested.load()) {
                 const auto commands = SimulationState::consumeCommands(rank);
 
                 for (const SimulationCommand& command : commands) {
@@ -118,7 +118,7 @@ namespace {
                         sleepApplication(
                             rank,
                             command.seconds,
-                            networkFinished
+                            isNetworkShutdownRequested
                         );
                     } else if (
                         command.type == SimulationCommandType::SendMessage
@@ -126,14 +126,14 @@ namespace {
                         createUserMessage(
                             rank,
                             queue,
-                            messagesReady,
+                            isMessageQueueReady,
                             command
                         );
                     } else if (command.type == SimulationCommandType::Stop) {
                         createFinishMessage(
                             rank,
                             queue,
-                            messagesReady
+                            isMessageQueueReady
                         );
                     }
                 }
@@ -149,15 +149,15 @@ namespace {
             SimulationState::markStopped(rank);
         } catch (...) {
             exception = std::current_exception();
-            networkFinished.store(true);
+            isNetworkShutdownRequested.store(true);
         }
     }
 
     void runOriginNetwork(
         const int rank,
         PersistentQueue& queue,
-        const std::atomic_bool& messagesReady,
-        std::atomic_bool& networkFinished,
+        const std::atomic_bool& isMessageQueueReady,
+        std::atomic_bool& isNetworkShutdownRequested,
         std::exception_ptr& exception
     ) {
         try {
@@ -165,63 +165,63 @@ namespace {
 
             std::optional<Message> inFlightMessage;
             MpiMessageTransport::PendingSend pendingSend;
-            MpiMessageTransport::PendingReceive pendingAckReceive;
-            bool sendActive = false;
-            bool ackActive = false;
+            MpiMessageTransport::PendingReceive pendingAcknowledgment;
+            bool isTransmissionActive = false;
+            bool isAcknowledgmentActive = false;
 
             Logger::info(
                 rank,
                 "ORIGEM-REDE",
-                "Loop MPI iniciado e independente da thread de aplicacao."
+                "Ciclo de rede MPI assincrono inicializado (thread separada)."
             );
 
-            while (!networkFinished.load()) {
-                if (!inFlightMessage.has_value() && messagesReady.load()) {
+            while (!isNetworkShutdownRequested.load()) {
+                if (!inFlightMessage.has_value() && isMessageQueueReady.load()) {
                     const auto pendingMessage = queue.peek();
 
                     if (pendingMessage.has_value()) {
                         inFlightMessage = pendingMessage.value();
 
                         MpiMessageTransport::startReceive(
-                            pendingAckReceive,
+                            pendingAcknowledgment,
                             SERVIDOR
                         );
-                        ackActive = true;
+                        isAcknowledgmentActive = true;
 
                         MpiMessageTransport::startSend(
                             pendingSend,
                             inFlightMessage.value(),
                             SERVIDOR
                         );
-                        sendActive = true;
+                        isTransmissionActive = true;
 
                         if (!isFinishMessage(inFlightMessage.value())) {
                             SimulationState::appendHistory(
                                 inFlightMessage->id,
                                 "Origem",
-                                "SENT_TO_SERVER"
+                                "ENVIADA_AO_SERVIDOR_MPI"
                             );
 
                             Logger::info(
                                 rank,
                                 "ORIGEM",
-                                "Mensagem enviada ao servidor."
+                                "Mensagem despachada ao no Servidor via comunicacao MPI."
                             );
                         }
                     }
                 }
 
-                if (sendActive && MpiMessageTransport::test(pendingSend)) {
-                    sendActive = false;
+                if (isTransmissionActive && MpiMessageTransport::test(pendingSend)) {
+                    isTransmissionActive = false;
                 }
 
-                if (ackActive) {
+                if (isAcknowledgmentActive) {
                     const auto ack = MpiMessageTransport::test(
-                        pendingAckReceive
+                        pendingAcknowledgment
                     );
 
                     if (ack.has_value()) {
-                        ackActive = false;
+                        isAcknowledgmentActive = false;
                         validateAck(
                             ack.value(),
                             inFlightMessage->id,
@@ -236,21 +236,21 @@ namespace {
                             Logger::info(
                                 rank,
                                 "ORIGEM",
-                                "ACK da finalizacao recebido."
+                                "Confirmacao (ACK) de finalizacao recebida do Servidor."
                             );
 
-                            networkFinished.store(true);
+                            isNetworkShutdownRequested.store(true);
                         } else {
                             SimulationState::appendHistory(
                                 removedMessage.id,
                                 "Origem",
-                                "ACK_FROM_SERVER"
+                                "CONFIRMACAO_RECEBIDA_SERVIDOR"
                             );
 
                             Logger::info(
                                 rank,
                                 "ORIGEM",
-                                "ACK recebido. Mensagem removida da fila."
+                                "Confirmacao (ACK) recebida. Mensagem limpa da fila local."
                             );
                         }
 
@@ -262,7 +262,7 @@ namespace {
             }
         } catch (...) {
             exception = std::current_exception();
-            networkFinished.store(true);
+            isNetworkShutdownRequested.store(true);
         }
     }
 }
@@ -272,21 +272,21 @@ void runOrigin(
     PersistentQueue& queue,
     std::mt19937 randomGenerator
 ) {
-    std::atomic_bool messagesReady{false};
-    std::atomic_bool networkFinished{false};
-    std::atomic_bool consoleFinished{false};
+    std::atomic_bool isMessageQueueReady{false};
+    std::atomic_bool isNetworkShutdownRequested{false};
+    std::atomic_bool isConsoleShutdownRequested{false};
     std::exception_ptr applicationException;
     std::exception_ptr networkException;
     std::exception_ptr consoleException;
 
     std::thread consoleThread(
-        [&consoleFinished, &consoleException]() {
+        [&isConsoleShutdownRequested, &consoleException]() {
             try {
-                SimulationConsole console(consoleFinished);
+                SimulationConsole console(isConsoleShutdownRequested);
                 console.run();
             } catch (...) {
                 consoleException = std::current_exception();
-                consoleFinished.store(true);
+                isConsoleShutdownRequested.store(true);
             }
         }
     );
@@ -295,8 +295,8 @@ void runOrigin(
         runOriginApplication,
         rank,
         std::ref(queue),
-        std::ref(messagesReady),
-        std::ref(networkFinished),
+        std::ref(isMessageQueueReady),
+        std::ref(isNetworkShutdownRequested),
         std::ref(applicationException),
         randomGenerator
     );
@@ -305,8 +305,8 @@ void runOrigin(
         runOriginNetwork,
         rank,
         std::ref(queue),
-        std::cref(messagesReady),
-        std::ref(networkFinished),
+        std::cref(isMessageQueueReady),
+        std::ref(isNetworkShutdownRequested),
         std::ref(networkException)
     );
 

@@ -2,6 +2,7 @@
 
 #include "SimulationRoles.hpp"
 #include "SimulationState.hpp"
+#include "Logger.hpp"
 
 #include <iostream>
 #include <limits>
@@ -13,9 +14,11 @@ SimulationConsole::SimulationConsole(std::atomic_bool& stopRequested)
 
 void SimulationConsole::run() {
     while (!stopRequested_.load()) {
+        Logger::setPaused(true);
         printMenu();
 
         const int option = readInt("Escolha: ");
+        Logger::setPaused(false);
 
         if (option == 1) {
             sendMessage();
@@ -63,10 +66,12 @@ void SimulationConsole::printMenu() const {
 }
 
 void SimulationConsole::sendMessage() {
+    Logger::setPaused(true);
     std::cout << "\nDigite a mensagem:\n\n> ";
 
     std::string content;
     std::getline(std::cin >> std::ws, content);
+    Logger::setPaused(false);
 
     if (content.empty()) {
         std::cout << "\nMensagem vazia ignorada.\n";
@@ -90,7 +95,9 @@ void SimulationConsole::sendMessage() {
 }
 
 void SimulationConsole::sleepProcess(const int rank) {
+    Logger::setPaused(true);
     const int seconds = readInt("\nQuantos segundos?\n\n> ");
+    Logger::setPaused(false);
 
     if (seconds <= 0) {
         std::cout << "\nDuracao invalida.\n";
@@ -107,7 +114,9 @@ void SimulationConsole::sleepProcess(const int rank) {
 }
 
 void SimulationConsole::showMessageTimeline() {
+    Logger::setPaused(true);
     const int messageId = readInt("\nMensagem:\n\n> ");
+    Logger::setPaused(false);
 
     if (messageId <= 0) {
         std::cout << "\nNumero de mensagem invalido.\n";

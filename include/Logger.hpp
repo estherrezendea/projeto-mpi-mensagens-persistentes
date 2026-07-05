@@ -7,9 +7,17 @@
 #include <mutex>
 #include <sstream>
 #include <string>
-
+#include <vector>
 class Logger {
 public:
+    static void setPaused(bool paused) {
+        std::lock_guard<std::mutex> lock(outputMutex_);
+        paused_ = paused;
+        if (!paused_) {
+            flushUnlocked();
+        }
+    }
+
     static void info(
         int rank,
         const std::string& component,
@@ -17,16 +25,35 @@ public:
     ) {
         std::lock_guard<std::mutex> lock(outputMutex_);
 
-        std::cout
+        std::ostringstream formattedMessage;
+        formattedMessage
             << '[' << currentTime() << ']'
             << " [Processo " << rank << ']'
             << " [" << component << "] "
-            << message
-            << std::endl;
+            << message;
+
+        if (paused_) {
+            pendingLogs_.push_back(formattedMessage.str());
+        } else {
+            std::cout << formattedMessage.str() << std::endl;
+        }
     }
 
 private:
     inline static std::mutex outputMutex_;
+    inline static bool paused_ = false;
+    inline static std::vector<std::string> pendingLogs_;
+
+    static void flushUnlocked() {
+        if (!pendingLogs_.empty()) {
+            std::cout << "\n--- Logs acumulados ---\n";
+            for (const auto& log : pendingLogs_) {
+                std::cout << log << std::endl;
+            }
+            std::cout << "-----------------------\n" << std::endl;
+            pendingLogs_.clear();
+        }
+    }
 
     static std::string currentTime() {
         const auto now = std::chrono::system_clock::now();

@@ -18,7 +18,7 @@
 namespace {
     void runServerApplication(
         const int rank,
-        const std::atomic_bool& networkFinished,
+        const std::atomic_bool& isNetworkShutdownRequested,
         std::exception_ptr& exception,
         std::mt19937 randomGenerator
     ) {
@@ -27,7 +27,7 @@ namespace {
         try {
             SimulationState::markAwake(rank);
 
-            while (!networkFinished.load()) {
+            while (!isNetworkShutdownRequested.load()) {
                 const auto commands = SimulationState::consumeCommands(rank);
 
                 for (const SimulationCommand& command : commands) {
@@ -36,13 +36,13 @@ namespace {
                     }
 
                     for (int remaining = command.seconds;
-                         remaining > 0 && !networkFinished.load();
+                         remaining > 0 && !isNetworkShutdownRequested.load();
                          --remaining) {
                         SimulationState::markSleeping(rank, remaining);
                         Logger::info(
                             rank,
                             "SERVIDOR",
-                            "Aplicacao dormindo."
+                            "Processo de aplicacao suspenso (idle mode)."
                         );
                         std::this_thread::sleep_for(
                             std::chrono::seconds(1)
@@ -50,7 +50,7 @@ namespace {
                     }
 
                     SimulationState::markAwake(rank);
-                    Logger::info(rank, "SERVIDOR", "Aplicacao acordou.");
+                    Logger::info(rank, "SERVIDOR", "Processo de aplicacao retomado.");
                 }
 
                 if (commands.empty()) {
@@ -70,27 +70,27 @@ namespace {
     void runServerNetwork(
         const int rank,
         PersistentQueue& queue,
-        std::atomic_bool& networkFinished,
+        std::atomic_bool& isNetworkShutdownRequested,
         std::exception_ptr& exception
     ) {
         try {
             using namespace SimulationRoles;
 
-            std::list<MpiMessageTransport::PendingSend> pendingAckSends;
-            std::optional<Message> forwardingMessage;
+            std::list<MpiMessageTransport::PendingSend> pendingAcksToDispatch;
+            std::optional<Message> messagePendingForward;
             MpiMessageTransport::PendingSend pendingForwardSend;
-            MpiMessageTransport::PendingReceive pendingAckReceive;
-            bool forwardSendActive = false;
-            bool destinationAckActive = false;
+            MpiMessageTransport::PendingReceive pendingAcknowledgment;
+            bool isForwardTransmissionActive = false;
+            bool isDestinationAcknowledgmentActive = false;
 
             Logger::info(
                 rank,
                 "SERVIDOR-REDE",
-                "Loop MPI iniciado. Recebimento, ACK e encaminhamento rodam fora da thread de aplicacao."
+                "Ciclo de rede MPI assincrono (recv/ack/forward) inicializado (thread separada)."
             );
 
-            while (!networkFinished.load()) {
-                testPendingSends(pendingAckSends);
+            while (!isNetworkShutdownRequested.load()) {
+                testPendingSends(pendingAcksToDispatch);
 
                 if (MpiMessageTransport::hasMessage(ORIGEM)) {
                     const Message receivedMessage =
@@ -102,34 +102,34 @@ namespace {
                         Logger::info(
                             rank,
                             "SERVIDOR",
-                            "Mensagem de finalizacao recebida e persistida."
+                            "Sinal de finalizacao (Tombstone) recebido e gravado em disco."
                         );
                     } else {
                         SimulationState::appendHistory(
                             receivedMessage.id,
                             "Servidor",
-                            "RECEIVED"
+                            "RECEBIDA_PELA_REDE"
                         );
                         SimulationState::appendHistory(
                             receivedMessage.id,
                             "Servidor",
-                            "SERVER_PERSISTED"
+                            "GRAVADA_FILA_SERVIDOR"
                         );
 
                         Logger::info(
                             rank,
                             "SERVIDOR",
-                            "Mensagem recebida."
+                            "Mensagem recebida via protocolo MPI."
                         );
                         Logger::info(
                             rank,
                             "SERVIDOR",
-                            "Mensagem gravada na fila persistente."
+                            "Mensagem inserida na fila de processamento persistente em disco."
                         );
                     }
 
                     registerPendingSend(
-                        pendingAckSends,
+                        pendingAcksToDispatch,
                         createAck(
                             receivedMessage.id,
                             SERVIDOR,
@@ -142,86 +142,86 @@ namespace {
                     Logger::info(
                         rank,
                         "SERVIDOR-REDE",
-                        "ACK assincrono registrado para a Origem."
+                        "Confirmacao (ACK) assincrona enfileirada para a Origem."
                     );
                 }
 
-                if (!forwardingMessage.has_value()) {
+                if (!messagePendingForward.has_value()) {
                     const auto pendingMessage = queue.peek();
 
                     if (pendingMessage.has_value()) {
-                        forwardingMessage = pendingMessage.value();
+                        messagePendingForward = pendingMessage.value();
 
-                        if (isFinishMessage(forwardingMessage.value())) {
+                        if (isFinishMessage(messagePendingForward.value())) {
                             Logger::info(
                                 rank,
                                 "SERVIDOR",
-                                "Mensagem de finalizacao lida da fila persistente antes do encaminhamento."
+                                "Sinal de finalizacao processado pela fila de encaminhamento."
                             );
                         } else {
                             SimulationState::appendHistory(
-                                forwardingMessage->id,
+                                messagePendingForward->id,
                                 "Servidor",
-                                "READ_FROM_QUEUE"
+                                "LIDA_FILA_PERSISTENTE"
                             );
 
                             Logger::info(
                                 rank,
                                 "SERVIDOR",
-                                "Mensagem recuperada da fila persistente."
+                                "Mensagem recuperada da fila em disco para roteamento."
                             );
                         }
 
-                        forwardingMessage->senderRank = SERVIDOR;
-                        forwardingMessage->receiverRank = DESTINO;
+                        messagePendingForward->senderRank = SERVIDOR;
+                        messagePendingForward->receiverRank = DESTINO;
 
                         MpiMessageTransport::startReceive(
-                            pendingAckReceive,
+                            pendingAcknowledgment,
                             DESTINO
                         );
-                        destinationAckActive = true;
+                        isDestinationAcknowledgmentActive = true;
 
                         MpiMessageTransport::startSend(
                             pendingForwardSend,
-                            forwardingMessage.value(),
+                            messagePendingForward.value(),
                             DESTINO
                         );
-                        forwardSendActive = true;
+                        isForwardTransmissionActive = true;
 
-                        if (!isFinishMessage(forwardingMessage.value())) {
+                        if (!isFinishMessage(messagePendingForward.value())) {
                             SimulationState::appendHistory(
-                                forwardingMessage->id,
+                                messagePendingForward->id,
                                 "Servidor",
-                                "FORWARDED"
+                                "ENCAMINHADA_AO_DESTINO_MPI"
                             );
 
                             Logger::info(
                                 rank,
                                 "SERVIDOR",
-                                "Mensagem encaminhada ao destino."
+                                "Mensagem despachada ao no Destino via comunicacao MPI."
                             );
                         }
                     }
                 }
 
                 if (
-                    forwardSendActive &&
+                    isForwardTransmissionActive &&
                     MpiMessageTransport::test(pendingForwardSend)
                 ) {
-                    forwardSendActive = false;
+                    isForwardTransmissionActive = false;
                 }
 
-                if (destinationAckActive) {
+                if (isDestinationAcknowledgmentActive) {
                     const auto ack = MpiMessageTransport::test(
-                        pendingAckReceive
+                        pendingAcknowledgment
                     );
 
                     if (ack.has_value()) {
-                        destinationAckActive = false;
+                        isDestinationAcknowledgmentActive = false;
 
                         validateAck(
                             ack.value(),
-                            forwardingMessage->id,
+                            messagePendingForward->id,
                             DESTINO,
                             "o Servidor"
                         );
@@ -233,38 +233,38 @@ namespace {
                             Logger::info(
                                 rank,
                                 "SERVIDOR",
-                                "ACK da finalizacao recebido. Servidor encerrou."
+                                "Confirmacao (ACK) de finalizacao recebida. Ciclo do Servidor encerrado."
                             );
 
-                            networkFinished.store(true);
+                            isNetworkShutdownRequested.store(true);
                         } else {
                             SimulationState::appendHistory(
                                 removedMessage.id,
                                 "Servidor",
-                                "ACK_FROM_DESTINATION"
+                                "CONFIRMACAO_RECEBIDA_DESTINO"
                             );
 
                             Logger::info(
                                 rank,
                                 "SERVIDOR",
-                                "ACK recebido do destino. Mensagem removida da fila."
+                                "Confirmacao (ACK) recebida do Destino. Mensagem limpa da fila local."
                             );
                         }
 
-                        forwardingMessage.reset();
+                        messagePendingForward.reset();
                     }
                 }
 
                 networkPause();
             }
 
-            while (!pendingAckSends.empty()) {
-                testPendingSends(pendingAckSends);
+            while (!pendingAcksToDispatch.empty()) {
+                testPendingSends(pendingAcksToDispatch);
                 networkPause();
             }
         } catch (...) {
             exception = std::current_exception();
-            networkFinished.store(true);
+            isNetworkShutdownRequested.store(true);
         }
     }
 }
@@ -274,14 +274,14 @@ void runServer(
     PersistentQueue& queue,
     std::mt19937 randomGenerator
 ) {
-    std::atomic_bool networkFinished{false};
+    std::atomic_bool isNetworkShutdownRequested{false};
     std::exception_ptr applicationException;
     std::exception_ptr networkException;
 
     std::thread applicationThread(
         runServerApplication,
         rank,
-        std::cref(networkFinished),
+        std::cref(isNetworkShutdownRequested),
         std::ref(applicationException),
         randomGenerator
     );
@@ -290,7 +290,7 @@ void runServer(
         runServerNetwork,
         rank,
         std::ref(queue),
-        std::ref(networkFinished),
+        std::ref(isNetworkShutdownRequested),
         std::ref(networkException)
     );
 

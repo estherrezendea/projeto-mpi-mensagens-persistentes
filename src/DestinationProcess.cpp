@@ -18,8 +18,8 @@ namespace {
     void runDestinationApplication(
         const int rank,
         PersistentQueue& queue,
-        const std::atomic_bool& finishReceivedByNetwork,
-        std::atomic_bool& applicationFinished,
+        const std::atomic_bool& hasReceivedFinishSignal,
+        std::atomic_bool& isApplicationShutdownRequested,
         std::exception_ptr& exception,
         std::mt19937 randomGenerator
     ) {
@@ -28,7 +28,7 @@ namespace {
         try {
             SimulationState::markAwake(rank);
 
-            while (!applicationFinished.load()) {
+            while (!isApplicationShutdownRequested.load()) {
                 const auto commands = SimulationState::consumeCommands(rank);
 
                 for (const SimulationCommand& command : commands) {
@@ -37,13 +37,13 @@ namespace {
                     }
 
                     for (int remaining = command.seconds;
-                         remaining > 0 && !applicationFinished.load();
+                         remaining > 0 && !isApplicationShutdownRequested.load();
                          --remaining) {
                         SimulationState::markSleeping(rank, remaining);
                         Logger::info(
                             rank,
                             "DESTINO",
-                            "Aplicacao dormindo."
+                            "Processo de aplicacao suspenso (idle mode)."
                         );
                         std::this_thread::sleep_for(
                             std::chrono::seconds(1)
@@ -57,25 +57,25 @@ namespace {
                             SimulationState::appendHistory(
                                 message.id,
                                 "Destino",
-                                "APP_SLEEPING"
+                                "APLICACAO_SUSPENSA"
                             );
                             SimulationState::appendHistory(
                                 message.id,
                                 "Destino",
-                                "APP_AWAKE"
+                                "APLICACAO_RETOMADA"
                             );
                         }
                     }
 
                     SimulationState::markAwake(rank);
-                    Logger::info(rank, "DESTINO", "Aplicacao acordou.");
+                    Logger::info(rank, "DESTINO", "Processo de aplicacao retomado.");
                 }
 
                 const auto pendingMessage = queue.peek();
 
                 if (!pendingMessage.has_value()) {
-                    if (finishReceivedByNetwork.load()) {
-                        applicationFinished.store(true);
+                    if (hasReceivedFinishSignal.load()) {
+                        isApplicationShutdownRequested.store(true);
                         SimulationState::markStopped(rank);
                     }
 
@@ -92,16 +92,16 @@ namespace {
                     Logger::info(
                         rank,
                         "DESTINO",
-                        "Finalizacao processada. Destino encerrou a aplicacao."
+                        "Sinal de finalizacao processado. Encerrando o modulo de aplicacao."
                     );
 
-                    applicationFinished.store(true);
+                    isApplicationShutdownRequested.store(true);
                     SimulationState::markStopped(rank);
                 } else {
                     SimulationState::appendHistory(
                         removedMessage.id,
                         "Destino",
-                        "PROCESSED"
+                        "MENSAGEM_PROCESSADA_COM_SUCESSO"
                     );
                     SimulationState::appendProcessedMessage(
                         rank,
@@ -112,35 +112,35 @@ namespace {
                     Logger::info(
                         rank,
                         "DESTINO",
-                        "Mensagem concluida."
+                        "Ciclo de vida da mensagem finalizado com sucesso."
                     );
                 }
             }
         } catch (...) {
             exception = std::current_exception();
-            applicationFinished.store(true);
+            isApplicationShutdownRequested.store(true);
         }
     }
 
     void runDestinationNetwork(
         const int rank,
         PersistentQueue& queue,
-        std::atomic_bool& finishReceivedByNetwork,
+        std::atomic_bool& hasReceivedFinishSignal,
         std::exception_ptr& exception
     ) {
         try {
             using namespace SimulationRoles;
 
-            std::list<MpiMessageTransport::PendingSend> pendingAckSends;
+            std::list<MpiMessageTransport::PendingSend> pendingAcksToDispatch;
 
             Logger::info(
                 rank,
                 "DESTINO-REDE",
-                "Loop MPI iniciado. Recebimento e ACK independem do sono da aplicacao."
+                "Ciclo de rede MPI assincrono inicializado no Destino."
             );
 
-            while (!finishReceivedByNetwork.load()) {
-                testPendingSends(pendingAckSends);
+            while (!hasReceivedFinishSignal.load()) {
+                testPendingSends(pendingAcksToDispatch);
 
                 if (MpiMessageTransport::hasMessage(SERVIDOR)) {
                     const Message receivedMessage =
@@ -152,44 +152,44 @@ namespace {
                         Logger::info(
                             rank,
                             "DESTINO",
-                            "Mensagem de finalizacao recebida e persistida."
+                            "Sinal de finalizacao (Tombstone) recebido e gravado em disco."
                         );
                     } else {
                         SimulationState::appendHistory(
                             receivedMessage.id,
                             "Destino",
-                            "RECEIVED"
+                            "RECEBIDA_PELA_REDE"
                         );
                         SimulationState::appendHistory(
                             receivedMessage.id,
                             "Destino",
-                            "DESTINATION_PERSISTED"
+                            "GRAVADA_FILA_DESTINO"
                         );
                         SimulationState::appendHistory(
                             receivedMessage.id,
                             "Destino",
-                            "WAITING_PROCESSING"
+                            "AGUARDANDO_PROCESSAMENTO_APLICACAO"
                         );
 
                         Logger::info(
                             rank,
                             "DESTINO",
-                            "Mensagem recebida."
+                            "Mensagem recebida via protocolo MPI."
                         );
                         Logger::info(
                             rank,
                             "DESTINO",
-                            "Mensagem persistida."
+                            "Mensagem serializada e gravada com seguranca em disco."
                         );
                         Logger::info(
                             rank,
                             "DESTINO",
-                            "Mensagem aguardando processamento."
+                            "Mensagem em espera na fila de aplicacao (aguardando idle terminar)."
                         );
                     }
 
                     registerPendingSend(
-                        pendingAckSends,
+                        pendingAcksToDispatch,
                         createAck(
                             receivedMessage.id,
                             DESTINO,
@@ -202,24 +202,24 @@ namespace {
                     Logger::info(
                         rank,
                         "DESTINO-REDE",
-                        "ACK assincrono registrado para o Servidor."
+                        "Confirmacao (ACK) assincrona enfileirada para o Servidor."
                     );
 
                     if (isFinishMessage(receivedMessage)) {
-                        finishReceivedByNetwork.store(true);
+                        hasReceivedFinishSignal.store(true);
                     }
                 }
 
                 networkPause();
             }
 
-            while (!pendingAckSends.empty()) {
-                testPendingSends(pendingAckSends);
+            while (!pendingAcksToDispatch.empty()) {
+                testPendingSends(pendingAcksToDispatch);
                 networkPause();
             }
         } catch (...) {
             exception = std::current_exception();
-            finishReceivedByNetwork.store(true);
+            hasReceivedFinishSignal.store(true);
         }
     }
 }
@@ -229,8 +229,8 @@ void runDestination(
     PersistentQueue& queue,
     std::mt19937 randomGenerator
 ) {
-    std::atomic_bool finishReceivedByNetwork{false};
-    std::atomic_bool applicationFinished{false};
+    std::atomic_bool hasReceivedFinishSignal{false};
+    std::atomic_bool isApplicationShutdownRequested{false};
     std::exception_ptr applicationException;
     std::exception_ptr networkException;
 
@@ -238,8 +238,8 @@ void runDestination(
         runDestinationApplication,
         rank,
         std::ref(queue),
-        std::cref(finishReceivedByNetwork),
-        std::ref(applicationFinished),
+        std::cref(hasReceivedFinishSignal),
+        std::ref(isApplicationShutdownRequested),
         std::ref(applicationException),
         randomGenerator
     );
@@ -248,7 +248,7 @@ void runDestination(
         runDestinationNetwork,
         rank,
         std::ref(queue),
-        std::ref(finishReceivedByNetwork),
+        std::ref(hasReceivedFinishSignal),
         std::ref(networkException)
     );
 
