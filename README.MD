@@ -231,30 +231,6 @@ Processo 2 -> Destino
 
 ---
 
-## 10. Exemplo de Saída Esperada
-
-Durante a execução, devem aparecer mensagens semelhantes a estas:
-
-```text
-[Processo 0] [ORIGEM] Mensagem criada.
-[Processo 0] [ORIGEM] Mensagem persistida.
-[Processo 0] [ORIGEM] Mensagem enviada ao servidor.
-
-[Processo 1] [SERVIDOR] Mensagem recebida.
-[Processo 1] [SERVIDOR] Mensagem gravada na fila persistente.
-[Processo 1] [SERVIDOR] Mensagem recuperada da fila persistente.
-[Processo 1] [SERVIDOR] Mensagem encaminhada ao destino.
-
-[Processo 2] [DESTINO] Mensagem recebida.
-[Processo 2] [DESTINO] Mensagem persistida.
-[Processo 2] [DESTINO] Mensagem aguardando processamento.
-[Processo 2] [DESTINO] Mensagem concluida.
-```
-
-A ordem global dos logs pode mudar a cada execução, pois os três processos executam concorrentemente.
-
----
-
 ## 11. Estrutura do Projeto
 
 ```text
@@ -307,5 +283,3 @@ projeto-mpi-mensagens-persistentes/
 | Uso de MPI                           | Comunicação com `MPI_Isend`, `MPI_Irecv`, `MPI_Iprobe` e `MPI_Test`           |
 | Recuperação do arquivo pelo servidor | Servidor utiliza a fila persistente antes de encaminhar a mensagem            |
 | Demonstração de funcionamento        | Menu interativo com estado das filas e histórico das mensagens                |
-
-```
